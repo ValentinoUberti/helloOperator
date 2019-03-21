@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,7 +91,9 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 	reqLogger.Info("Reconciling JedyKind")
 
 	// Fetch the JedyKind instance
+	// Here we have all the pods of JedyKind kind
 	instance := &cachev1alpha1.JedyKind{}
+
 	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -127,9 +130,43 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
+	// Get the spec: size requested by user from CR yaml file
 	size := instance.Spec.Size
 	logSizeStr := fmt.Sprintf("Requested size from CR : %d", size)
 	reqLogger.Info(logSizeStr)
+
+	// List all pods owned by this JedyKind instance
+	podList := &corev1.PodList{}
+	lbs := map[string]string{
+		"app": instance.Name,
+	}
+	labelSelector := labels.SelectorFromSet(lbs)
+	listOps := &client.ListOptions{Namespace: instance.Namespace, LabelSelector: labelSelector}
+	if err = r.client.List(context.TODO(), listOps, podList); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	var available []corev1.Pod
+	for _, pod := range podList.Items {
+		if pod.ObjectMeta.DeletionTimestamp != nil {
+			continue
+		}
+		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
+			available = append(available, pod)
+		}
+	}
+
+	numAvailable := int32(len(available))
+
+	logNumAvaible := fmt.Sprintf("Avaible pods : %d", numAvailable)
+	reqLogger.Info(logNumAvaible)
+
+	availableNames := []string{}
+	for _, pod := range available {
+		availableNames = append(availableNames, pod.ObjectMeta.Name)
+		logAvaiblePodName := fmt.Sprintf("Current pod name : %s", pod.ObjectMeta.Name)
+		reqLogger.Info(logAvaiblePodName)
+	}
 
 	// Pod already exists - don't requeue
 	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
