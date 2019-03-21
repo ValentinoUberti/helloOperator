@@ -2,6 +2,8 @@ package jedykind
 
 import (
 	"context"
+	"math/rand"
+	"time"
 
 	cachev1alpha1 "github.com/ValentinoUberti/hello-operator/pkg/apis/cache/v1alpha1"
 
@@ -12,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -115,21 +116,22 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	// Check if this Pod already exists
-	found := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-		err = r.client.Create(context.TODO(), pod)
-		if err != nil {
+	/*
+		found := &corev1.Pod{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
+		if err != nil && errors.IsNotFound(err) {
+			reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
+			err = r.client.Create(context.TODO(), pod)
+			if err != nil {
+				return reconcile.Result{}, err
+			}
+
+			// Pod created successfully - don't requeue
+			return reconcile.Result{}, nil
+		} else if err != nil {
 			return reconcile.Result{}, err
 		}
-
-		// Pod created successfully - don't requeue
-		return reconcile.Result{}, nil
-	} else if err != nil {
-		return reconcile.Result{}, err
-	}
-
+	*/
 	// Get the spec: size requested by user from CR yaml file
 	size := instance.Spec.Size
 	logSizeStr := fmt.Sprintf("Requested size from CR : %d", size)
@@ -168,19 +170,64 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 		reqLogger.Info(logAvaiblePodName)
 	}
 
+	if numAvailable > instance.Spec.Size {
+		reqLogger.Info("Scaling down pods", "Currently available", numAvailable, "Required replicas", instance.Spec.Size)
+		diff := numAvailable - instance.Spec.Size
+		dpods := available[:diff]
+		for _, dpod := range dpods {
+			err = r.client.Delete(context.TODO(), &dpod)
+			if err != nil {
+				reqLogger.Error(err, "Failed to delete pod", "pod.name", dpod.Name)
+				return reconcile.Result{}, err
+			}
+		}
+		return reconcile.Result{Requeue: true}, nil
+	}
+
 	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	//reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+
+	if numAvailable < instance.Spec.Size {
+		reqLogger.Info("Scaling up pods", "Currently available", numAvailable, "Required size", instance.Spec.Size)
+		// Define a new Pod object
+		pod := newPodForCR(instance)
+		// Set PodSet instance as the owner and controller
+		if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+		err = r.client.Create(context.TODO(), pod)
+		if err != nil {
+			reqLogger.Error(err, "Failed to create pod", "pod.name", pod.Name)
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{Requeue: true}, nil
+	}
+
 	return reconcile.Result{}, nil
+}
+
+func StringWithCharset(length int, charset string) string {
+	var seededRand *rand.Rand = rand.New(
+		rand.NewSource(time.Now().UnixNano()))
+
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[seededRand.Intn(len(charset))]
+	}
+	return string(b)
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
 func newPodForCR(cr *cachev1alpha1.JedyKind) *corev1.Pod {
+
+	const charset = "abcdefghijklmnopqrstuvwxyz"
+
 	labels := map[string]string{
 		"app": cr.Name,
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
+			Name:      cr.Name + "-pod-" + StringWithCharset(5, charset),
 			Namespace: cr.Namespace,
 			Labels:    labels,
 		},
