@@ -1,0 +1,2 @@
+# helloOperator
+Testing openshift operators
