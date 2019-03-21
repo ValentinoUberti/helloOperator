@@ -108,12 +108,12 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	// Define a new Pod object
-	pod := newPodForCR(instance)
+	//pod := newPodForCR(instance)
 
 	// Set JedyKind instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
+	//if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
+	//	return reconcile.Result{}, err
+	//}
 
 	// Check if this Pod already exists
 	/*
@@ -132,7 +132,10 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 			return reconcile.Result{}, err
 		}
 	*/
+
+	// Start custom logic by ValeUbe
 	// Get the spec: size requested by user from CR yaml file
+	// ./deploy/crds/cache_v1alpha1_jedykind_cr.yaml
 	size := instance.Spec.Size
 	logSizeStr := fmt.Sprintf("Requested size from CR : %d", size)
 	reqLogger.Info(logSizeStr)
@@ -202,6 +205,8 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 		}
 		return reconcile.Result{Requeue: true}, nil
 	}
+
+	//End custom logic by ValeUbe
 
 	return reconcile.Result{}, nil
 }
