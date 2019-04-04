@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -26,15 +27,23 @@ import (
 
 var log = logf.Log.WithName("controller_jedykind")
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
+type PodDbType struct {
+	PodName  string
+	IsMaster bool
+}
+
+func IsMaster(pod PodDbType) bool {
+
+	return pod.IsMaster
+}
+
+type LivePodList []PodDbType
 
 // Add creates a new JedyKind Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
 	return add(mgr, newReconciler(mgr))
+
 }
 
 // newReconciler returns a new reconcile.Reconciler
@@ -90,6 +99,7 @@ type ReconcileJedyKind struct {
 func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling JedyKind")
+	const charset = "abcdefghijklmnopqrstuvwxyz"
 
 	// Fetch the JedyKind instance
 	// Here we have all the pods of JedyKind kind
@@ -107,32 +117,6 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object
-	//pod := newPodForCR(instance)
-
-	// Set JedyKind instance as the owner and controller
-	//if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-	//	return reconcile.Result{}, err
-	//}
-
-	// Check if this Pod already exists
-	/*
-		found := &corev1.Pod{}
-		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-		if err != nil && errors.IsNotFound(err) {
-			reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-			err = r.client.Create(context.TODO(), pod)
-			if err != nil {
-				return reconcile.Result{}, err
-			}
-
-			// Pod created successfully - don't requeue
-			return reconcile.Result{}, nil
-		} else if err != nil {
-			return reconcile.Result{}, err
-		}
-	*/
-
 	// Start custom logic by ValeUbe
 	// Get the spec: size requested by user from CR yaml file
 	// ./deploy/crds/cache_v1alpha1_jedykind_cr.yaml
@@ -146,6 +130,7 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 		"app": instance.Name,
 	}
 	labelSelector := labels.SelectorFromSet(lbs)
+
 	listOps := &client.ListOptions{Namespace: instance.Namespace, LabelSelector: labelSelector}
 	if err = r.client.List(context.TODO(), listOps, podList); err != nil {
 		return reconcile.Result{}, err
@@ -153,9 +138,11 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 
 	var available []corev1.Pod
 	for _, pod := range podList.Items {
+
 		if pod.ObjectMeta.DeletionTimestamp != nil {
 			continue
 		}
+
 		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
 			available = append(available, pod)
 		}
@@ -167,10 +154,27 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 	reqLogger.Info(logNumAvaible)
 
 	availableNames := []string{}
+
+	createMaster := true
+
 	for _, pod := range available {
+
 		availableNames = append(availableNames, pod.ObjectMeta.Name)
 		logAvaiblePodName := fmt.Sprintf("Current pod name : %s", pod.ObjectMeta.Name)
 		reqLogger.Info(logAvaiblePodName)
+
+		logNumAvaible = fmt.Sprintf("Pod's ip : %v", pod.Status.PodIP)
+		reqLogger.Info(logNumAvaible)
+
+		isMaster := pod.GetLabels()["isMaster"]
+
+		if isMaster == "true" {
+			createMaster = false
+		}
+
+		logPodLabes := fmt.Sprintf("Is Master : %v", isMaster)
+		reqLogger.Info(string(logPodLabes))
+
 	}
 
 	if numAvailable > instance.Spec.Size {
@@ -193,7 +197,9 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 	if numAvailable < instance.Spec.Size {
 		reqLogger.Info("Scaling up pods", "Currently available", numAvailable, "Required size", instance.Spec.Size)
 		// Define a new Pod object
-		pod := newPodForCR(instance)
+		labelServiceSelector := StringWithCharset(5, charset)
+
+		pod := newPodForCR(instance, labelServiceSelector, createMaster)
 		// Set PodSet instance as the owner and controller
 		if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
 			return reconcile.Result{}, err
@@ -203,6 +209,18 @@ func (r *ReconcileJedyKind) Reconcile(request reconcile.Request) (reconcile.Resu
 			reqLogger.Error(err, "Failed to create pod", "pod.name", pod.Name)
 			return reconcile.Result{}, err
 		}
+
+		service := newServiceForPod(instance, labelServiceSelector)
+		// Set PodSet instance as the owner and controller
+		if err := controllerutil.SetControllerReference(instance, service, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+		err = r.client.Create(context.TODO(), service)
+		if err != nil {
+			reqLogger.Error(err, "Failed to create service", "service.name", service.Name)
+			return reconcile.Result{}, err
+		}
+
 		return reconcile.Result{Requeue: true}, nil
 	}
 
@@ -223,16 +241,24 @@ func StringWithCharset(length int, charset string) string {
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *cachev1alpha1.JedyKind) *corev1.Pod {
+func newPodForCR(cr *cachev1alpha1.JedyKind, labelServiceSelector string, master bool) *corev1.Pod {
 
-	const charset = "abcdefghijklmnopqrstuvwxyz"
+	uniqueLabel := cr.Name + "-slave-" + labelServiceSelector
+
+	isMaster := "false"
+	if master {
+		isMaster = "true"
+		uniqueLabel = cr.Name + "-master-" + labelServiceSelector
+	}
 
 	labels := map[string]string{
-		"app": cr.Name,
+		"app":              cr.Name,
+		"internal_service": labelServiceSelector,
+		"isMaster":         isMaster,
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod-" + StringWithCharset(5, charset),
+			Name:      uniqueLabel,
 			Namespace: cr.Namespace,
 			Labels:    labels,
 		},
@@ -246,4 +272,35 @@ func newPodForCR(cr *cachev1alpha1.JedyKind) *corev1.Pod {
 			},
 		},
 	}
+}
+
+func newServiceForPod(cr *cachev1alpha1.JedyKind, labelServiceSelector string) *corev1.Service {
+
+	uniqueLabel := cr.Name + "-service-" + labelServiceSelector
+	labels := map[string]string{
+		"app":              cr.Name,
+		"internal_service": labelServiceSelector,
+	}
+
+	serviceTargetPort := intstr.FromInt(3306)
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      uniqueLabel,
+			Namespace: cr.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "sentinel",
+					Port:       26379,
+					TargetPort: serviceTargetPort,
+					Protocol:   "TCP",
+				},
+			},
+		},
+	}
+
 }
